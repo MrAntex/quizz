@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quizz Buzzers</title>
+<style>
+  body{font-family:sans-serif;background:#111;color:#fff;margin:0;padding:2rem 1rem;text-align:center}
+  .box{max-width:420px;margin:0 auto}
+  a{display:block;margin:.6rem 0;padding:.8rem;border-radius:8px;background:#222;color:#fff;text-decoration:none}
+  .small{color:#888;font-size:.9rem}
+  .err{color:#f0a030}
+  .tip{background:#2a2410;color:#ffd970;border-radius:8px;padding:.8rem;text-align:left;font-size:.95rem;margin:1rem 0}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>🔘 Quizz Buzzers</h1>
+  <p id="status">Recherche du serveur…</p>
+  <div id="links"></div>
+  <div id="android" class="tip" hidden>
+    <b>Android : erreur « ERR_TOO_MANY_RETRIES » ?</b><br>
+    Chrome n'a pas le droit d'accéder au réseau local. Va dans <b>Paramètres › Applications ›
+    Chrome › Autorisations › Appareils à proximité › Autoriser</b>, puis reviens sur cette page.
+  </div>
+</div>
+<script>
+  // =====================================================================
+  //  Page relais : à héberger sur internet (ex : GitHub Pages), c'est l'adresse
+  //  à mettre dans les tags NFC : https://<toi>.github.io/<dépôt>/?b=<id du buzzer>
+  //
+  //  Le serveur du quiz publie son adresse locale sur ntfy.sh (voir server/data/relay.json) ;
+  //  cette page la lit et redirige le téléphone vers le PC.
+  // =====================================================================
+  const TOPIC = "quizz-fdcf90f141b8";        // le "topic" de server/data/relay.json
+  const RELAY_SERVER = "https://ntfy.sh";
+  const MDNS_URL = "http://quizz.local:3000";
+
+  const params = new URLSearchParams(location.search);
+  const topic = params.get("t") || TOPIC;
+  const server = params.get("s") || RELAY_SERVER;
+  const buzzer = params.get("b");                  // id du buzzer (tag NFC)
+  const pagePath = buzzer ? `/buzzers/${encodeURIComponent(buzzer)}` : "/";
+  const $ = id => document.getElementById(id);
+
+  // Adresses du réseau local les plus probables d'abord (box, hotspot), puis les autres.
+  // Seules les adresses locales sont acceptées : le sujet ntfy est public (dans cette page),
+  // quelqu'un pourrait y publier une fausse adresse pour rediriger vers un autre site.
+  const rank = ip => ip.startsWith("192.168.") ? 0 : ip.startsWith("10.") ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 2 : 3;
+  const isLocalIp = ip => /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && rank(ip) < 3;
+
+  function showLinks(ips, port) {
+    $("links").innerHTML = ips.map(ip => `<a href="http://${ip}:${port}${pagePath}">http://${ip}:${port}</a>`).join("") +
+      `<a href="${MDNS_URL}${pagePath}">${MDNS_URL} <span class="small">(sans internet)</span></a>`;
+  }
+
+  async function go() {
+    try {
+      const res = await fetch(`${server}/${encodeURIComponent(topic)}/json?poll=1&since=12h`);
+      const lines = (await res.text()).trim().split("\n").filter(Boolean).map(l => JSON.parse(l));
+      const last = lines.filter(l => l.event === "message").pop();
+      if (!last) throw new Error("le serveur n'a pas publié son adresse (allumé ? relais activé ?)");
+      const { ips, port, time } = JSON.parse(last.message);
+      const sorted = (Array.isArray(ips) ? ips : []).filter(isLocalIp).sort((a, b) => rank(a) - rank(b));
+      if (!sorted.length || !Number.isInteger(port)) throw new Error("adresse publiée invalide");
+      showLinks(sorted, port);
+      const age = Math.round((Date.now() - time) / 60000);
+      $("status").textContent = `Serveur trouvé (adresse publiée il y a ${age} min), redirection…`;
+      const target = `http://${sorted[0]}:${port}${pagePath}`;
+      if (/Android/i.test(navigator.userAgent)) {
+        // Android 17+ : sans l'autorisation "Appareils à proximité", Chrome ne joint pas le réseau local
+        // (ERR_TOO_MANY_RETRIES). On montre l'astuce, et on garde cette page dans l'historique
+        // (bouton retour) au lieu de la remplacer.
+        $("android").hidden = false;
+        setTimeout(() => { location.href = target; }, 3000);
+      } else {
+        location.replace(target);
+      }
+    } catch (e) {
+      // (textContent : le message d'erreur peut contenir du texte venu d'internet)
+      $("status").innerHTML = `<span class="err"></span><br>
+        <span class="small">Essaie le nom local ci-dessous (même Wi-Fi que le PC), ou le QR code.</span>`;
+      $("status").querySelector(".err").textContent = `Adresse du serveur introuvable : ${e.message}`;
+      $("links").innerHTML = `<a href="${MDNS_URL}${pagePath}">${MDNS_URL}${pagePath}</a>`;
+    }
+  }
+  go();
+</script>
+</body>
+</html>
